@@ -70,7 +70,7 @@ const THIS_SLOT = (THIS_MONTH + 5) % 12 + 1;
 const THIS_TA = THIS_MONTH >= 7 ? THIS_YEAR : THIS_YEAR - 1;
 const STORE_KEY = 'spp_pasundan2_v1';
 // Tempel alamat Web App Google Apps Script (berakhiran /exec). Kosong = mode lokal, data hanya di browser ini.
-const API_URL = 'https://script.google.com/macros/s/AKfycbwR68Yiuzu9YRY4WCYIN3EV7vxzjzaJmyYF5eIJ2KPHopVxK9Bd5mT3y3vUFmiyOo6J/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbz0a6V_MN5wpqHwLZKzUml73rg-5bybym7Fd5wFz3mE1NuA_zfDOAWp5EA6zyzLbG5b/exec';
 const CLOUD = !!API_URL;
 const AUTH_KEY = 'spp_pasundan2_auth';
 const SESSION_KEY = 'spp_pasundan2_session';
@@ -270,7 +270,6 @@ async function bootCloud() {
 async function submitAuthCloud(md) {
   const f = md.f, setup = md.mode === 'setup';
   const err = setup ? checkNew(f, true) : {};
-  if (setup && !f.code.trim()) err.code = 'Kode pendaftaran wajib diisi.';
   if (Object.keys(err).length) { md.errors = err; return renderModal(); }
   const username = f.username.trim().toLowerCase();
   const r = await callFromModal(setup ? { action: 'setup', code: f.code.trim(), nama: f.nama.trim(), username, password: f.password } : { action: 'login', username, password: f.password }, md, !setup);
@@ -1101,9 +1100,9 @@ const formErr = e => e ? `<p role="alert" class="mt-3 rounded-lg bg-red-50 px-3 
 
 function modalAuth(md) {
   const setup = md.mode === 'setup', f = md.f;
-  return `${modalHead(setup ? 'Buat Akun Admin Pertama' : 'Masuk', setup ? (CLOUD || ADMIN_SETUP_CODE ? 'Belum ada akun. Butuh kode pendaftaran dari pemilik sistem. Akun ini menjadi admin.' : 'Belum ada akun. Akun ini menjadi admin.') : 'Hanya akun terdaftar yang bisa mengubah data. Tanpa akun, data hanya bisa dilihat.')}
+  return `${modalHead(setup ? 'Buat Akun Admin Pertama' : 'Masuk', setup ? (!CLOUD && ADMIN_SETUP_CODE ? 'Belum ada akun. Butuh kode pendaftaran dari pemilik sistem. Akun ini menjadi admin.' : 'Belum ada akun. Akun ini menjadi admin.') : 'Hanya akun terdaftar yang bisa mengubah data. Tanpa akun, data hanya bisa dilihat.')}
   <form data-form="auth" class="overflow-y-auto p-5"><div class="grid gap-4">
-    ${setup ? (CLOUD || ADMIN_SETUP_CODE ? fieldHTML('Kode pendaftaran admin *', 'code', f.code, { af: true }) : '') + fieldHTML('Nama lengkap *', 'nama', f.nama, { ac: 'name', af: !CLOUD && !ADMIN_SETUP_CODE }) : ''}
+    ${setup ? (!CLOUD && ADMIN_SETUP_CODE ? fieldHTML('Kode pendaftaran admin *', 'code', f.code, { af: true }) : '') + fieldHTML('Nama lengkap *', 'nama', f.nama, { ac: 'name', af: CLOUD || !ADMIN_SETUP_CODE }) : ''}
     ${fieldHTML('Nama pengguna *', 'username', f.username, { ac: 'username', af: !setup && !md.error })}
     ${fieldHTML('Kata sandi *', 'password', f.password, { type: 'password', ac: setup ? 'new-password' : 'current-password', af: !setup && !!md.error })}
     ${setup ? fieldHTML('Ulangi kata sandi *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' }) : ''}</div>
