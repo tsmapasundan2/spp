@@ -69,10 +69,13 @@ const THIS_MONTH = NOW.getMonth() + 1;
 const THIS_SLOT = (THIS_MONTH + 5) % 12 + 1;
 const THIS_TA = THIS_MONTH >= 7 ? THIS_YEAR : THIS_YEAR - 1;
 const STORE_KEY = 'spp_pasundan2_v1';
+// Tempel alamat Web App Google Apps Script (berakhiran /exec). Kosong = mode lokal, data hanya di browser ini.
+const API_URL = 'https://script.google.com/macros/s/AKfycbzJ8xYIVPaRgzduR8iyByqKsTNzLCsYvspG1LDQZZeCC1utzeWH27pItIHTiLRHGPJq/exec';
+const CLOUD = !!API_URL;
 const AUTH_KEY = 'spp_pasundan2_auth';
 const SESSION_KEY = 'spp_pasundan2_session';
 // Kode untuk membuat admin pertama. Ganti isinya sebelum situs dipublikasikan; kosongkan ('') bila tidak ingin memakai kode.
-const ADMIN_SETUP_CODE = '5PPSM@P4SVND@N2T5M';
+const ADMIN_SETUP_CODE = 'ganti-kode-ini';
 const STATUSES = ['Aktif', 'Nonaktif', 'Lulus', 'Pindah'];
 const KETS = ['Reguler', 'Beasiswa', 'Keringanan'];
 const FEES = { ujian1: 'Operasional Ujian Semester 1', ujian2: 'Operasional Ujian Semester 2', rapor: 'Sampul Rapor' };
@@ -139,7 +142,8 @@ function terbilang(n) {
 
 // Data dan penyimpanan
 // Akun dan hak akses: tanpa akun hanya bisa melihat. Disimpan di browser ini, bukan di server.
-let AUTH = loadAuth();
+let AUTH = CLOUD ? { users: [] } : loadAuth();
+const cloud = { rev: '0', token: '', hasUsers: false, dirty: false, saving: false, timer: null };
 let session = null;
 let failCount = 0, lockUntil = 0;
 const USER_RE = /^[a-z0-9._-]{3,}$/;
@@ -175,15 +179,110 @@ function guard(admin) {
   else toast('Hanya admin yang boleh melakukan ini.', 'err');
   return false;
 }
-function setSession(u) {
+function setSession(u, token) {
   session = u ? { id: u.id, nama: u.nama, username: u.username, role: u.role } : null;
-  try { if (u) sessionStorage.setItem(SESSION_KEY, u.id); else sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* abaikan */ }
+  if (CLOUD) { cloud.token = u ? token : ''; AUTH.users = u ? [Object.assign({}, session)] : []; }
+  try {
+    if (u) sessionStorage.setItem(SESSION_KEY, CLOUD ? JSON.stringify({ token, user: session }) : u.id);
+    else sessionStorage.removeItem(SESSION_KEY);
+  } catch (e) { /* abaikan */ }
+}
+function forceLogout(msg) {
+  setSession(null); modal = null;
+  if (ui.page === 'pengaturan') ui.page = 'dashboard';
+  render(); renderModal(); toast(msg, 'err');
 }
 function restoreSession() {
   try { const u = AUTH.users.find(x => x.id === sessionStorage.getItem(SESSION_KEY)); if (u) setSession(u); } catch (e) { /* abaikan */ }
 }
+async function api(payload) {
+  const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+// Mengirim permintaan dari dialog; bila gagal, pesan tampil di dialog dan hasilnya null.
+async function callFromModal(payload, md, clearPassword = false) {
+  let r;
+  try { r = await api(payload); } catch (e) { r = { error: 'Tidak dapat terhubung ke Google Sheet. Periksa internet Anda.' }; }
+  if (modal !== md) return null;
+  if (r.unauthorized) { forceLogout('Sesi berakhir. Masuk lagi.'); return null; }
+  if (r.error) { md.error = r.error; if (clearPassword) md.f.password = ''; renderModal(); return null; }
+  return r;
+}
+async function refreshUsers() {
+  if (!CLOUD || !isAdmin()) return;
+  try {
+    const r = await api({ action: 'listUsers', token: cloud.token });
+    if (r.users) { AUTH.users = r.users; if (ui.page === 'pengaturan' && !modal) render(); }
+  } catch (e) { /* abaikan */ }
+}
+function applyRemote(r) {
+  DB = normalize(r.data); cloud.rev = r.rev; IDX = null;
+  if (!modal) render();
+}
+function queueSave() {
+  if (!session) return;
+  cloud.dirty = true; setSaveState('Menyimpan…');
+  clearTimeout(cloud.timer); cloud.timer = setTimeout(flushSave, 700);
+}
+async function flushSave() {
+  if (cloud.saving) return;
+  cloud.saving = true; cloud.dirty = false;
+  let wait = 300;
+  try {
+    const r = await api({ action: 'save', token: cloud.token, rev: cloud.rev, data: DB });
+    if (r.unauthorized) forceLogout('Sesi berakhir. Masuk lagi, lalu ulangi perubahan terakhir.');
+    else if (r.conflict) { applyRemote(r); setSaveState('Data diperbarui'); toast('Data baru saja diubah orang lain. Tampilan diperbarui, silakan ulangi perubahan Anda.', 'err'); }
+    else if (r.error) throw new Error(r.error);
+    else { cloud.rev = r.rev; if (!cloud.dirty) markSaved(); }
+  } catch (e) { cloud.dirty = true; wait = 5000; setSaveState('Gagal menyimpan, mencoba lagi…'); }
+  cloud.saving = false;
+  if (cloud.dirty) { clearTimeout(cloud.timer); cloud.timer = setTimeout(flushSave, wait); }
+}
+async function pollRemote() {
+  if (cloud.saving || cloud.dirty || modal || document.hidden) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+  try {
+    const r = await api({ action: 'rev' });
+    if (r.rev === cloud.rev) return;
+    const f = await api({ action: 'load', token: cloud.token });
+    if (f.data && !cloud.dirty && !cloud.saving && !modal) applyRemote(f);
+  } catch (e) { /* offline: coba lagi pada siklus berikutnya */ }
+}
+async function bootCloud() {
+  DB = normalize({});
+  $('app').innerHTML = '<div class="grid min-h-screen place-items-center px-6 text-center text-sm text-slate-500">Memuat data dari Google Sheet…</div>';
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch (e) { /* abaikan */ }
+  try {
+    const r = await api({ action: 'load', token: saved && saved.token });
+    cloud.hasUsers = !!r.hasUsers;
+    if (r.me) setSession(r.me, saved.token); else setSession(null);
+    DB = normalize(r.data); cloud.rev = r.rev;
+    render(); renderModal();
+    if (isAdmin()) refreshUsers();
+    setInterval(pollRemote, 15000);
+  } catch (e) {
+    $('app').innerHTML = '<div class="grid min-h-screen place-items-center px-6 text-center"><div><p class="font-semibold text-slate-800">Tidak dapat terhubung ke Google Sheet</p><p class="mt-1 text-sm text-slate-500">Periksa internet dan alamat API_URL, lalu coba lagi.</p><button data-action="retry-boot" class="mt-4 inline-flex rounded-lg bg-pas-700 px-4 py-2 text-sm font-semibold text-white hover:bg-pas-800">Coba lagi</button></div></div>';
+  }
+}
+async function submitAuthCloud(md) {
+  const f = md.f, setup = md.mode === 'setup';
+  const err = setup ? checkNew(f, true) : {};
+  if (setup && !f.code.trim()) err.code = 'Kode pendaftaran wajib diisi.';
+  if (Object.keys(err).length) { md.errors = err; return renderModal(); }
+  const username = f.username.trim().toLowerCase();
+  const r = await callFromModal(setup ? { action: 'setup', code: f.code.trim(), nama: f.nama.trim(), username, password: f.password } : { action: 'login', username, password: f.password }, md, !setup);
+  if (!r) return;
+  cloud.hasUsers = true; setSession(r.user, r.token); modal = null;
+  try { const d = await api({ action: 'load', token: cloud.token }); if (d.data) { DB = normalize(d.data); cloud.rev = d.rev; IDX = null; } } catch (e) { /* abaikan */ }
+  render(); renderModal(); refreshUsers();
+  toast(setup ? 'Akun admin dibuat. Anda sudah masuk.' : `Masuk sebagai ${r.user.nama}.`);
+}
+
 function openAuth() {
-  modal = { type: 'auth', mode: AUTH.users.length ? 'login' : 'setup', f: { code: '', nama: '', username: '', password: '', confirm: '' }, errors: {}, error: '' };
+  modal = { type: 'auth', mode: (CLOUD ? cloud.hasUsers : AUTH.users.length) ? 'login' : 'setup', f: { code: '', nama: '', username: '', password: '', confirm: '' }, errors: {}, error: '' };
   renderModal();
 }
 function checkNew(f, needUser) {
@@ -205,6 +304,7 @@ function checkPw(f) {
 }
 async function submitAuth() {
   const md = modal, f = md.f;
+  if (CLOUD) return submitAuthCloud(md);
   if (md.mode === 'setup') {
     if (AUTH.users.length) return;
     const err = checkNew(f, true);
@@ -234,6 +334,11 @@ async function submitUser() {
   if (!guard(true)) return;
   const md = modal, f = md.f, err = checkNew(f, true);
   if (Object.keys(err).length) { md.errors = err; return renderModal(); }
+  if (CLOUD) {
+    const r = await callFromModal({ action: 'addUser', token: cloud.token, nama: f.nama.trim(), username: f.username.trim().toLowerCase(), password: f.password, role: f.role }, md);
+    if (!r) return;
+    modal = null; renderModal(); refreshUsers(); return toast('Akun ditambahkan.');
+  }
   const u = await newUser(f.nama.trim(), f.username.trim().toLowerCase(), f.password, f.role === 'admin' ? 'admin' : 'petugas');
   AUTH.users.push(u); saveAuth(); modal = null; render(); renderModal(); toast('Akun ditambahkan.');
 }
@@ -244,8 +349,13 @@ async function submitPassword() {
   if (!self && !guard(true)) return;
   const u = AUTH.users.find(x => x.id === md.userId); if (!u) return;
   const err = checkPw(f);
-  if (self && !(await hashPw(f.current, u.salt) === u.hash)) err.current = 'Kata sandi saat ini salah.';
+  if (self && !CLOUD && !(await hashPw(f.current, u.salt) === u.hash)) err.current = 'Kata sandi saat ini salah.';
   if (Object.keys(err).length) { md.errors = err; return renderModal(); }
+  if (CLOUD) {
+    const r = await callFromModal({ action: 'setPassword', token: cloud.token, userId: md.userId, current: f.current, password: f.password }, md);
+    if (!r) return;
+    modal = null; renderModal(); return toast('Kata sandi diperbarui.');
+  }
   u.salt = uid(); u.hash = await hashPw(f.password, u.salt); saveAuth(); modal = null; renderModal();
   toast('Kata sandi diperbarui.');
 }
@@ -254,8 +364,12 @@ let DB;
 let IDX = null;
 let lastSaved = '';
 function markSaved() {
-  const n = new Date(); lastSaved = `${pad(n.getHours())}.${pad(n.getMinutes())}`;
-  const el = $('saveState'); if (el) el.textContent = 'Tersimpan ' + lastSaved;
+  const n = new Date();
+  setSaveState(`${CLOUD ? 'Tersimpan di Google Sheet' : 'Tersimpan'} ${pad(n.getHours())}.${pad(n.getMinutes())}`);
+}
+function setSaveState(t) {
+  lastSaved = t;
+  const el = $('saveState'); if (el) el.textContent = t;
 }
 
 const defaultSettings = () => ({
@@ -291,6 +405,7 @@ function loadDB() {
 }
 function persist() {
   IDX = null;
+  if (CLOUD) return queueSave();
   try { localStorage.setItem(STORE_KEY, JSON.stringify(DB)); markSaved(); }
   catch (e) {
     if (!persist.warned) {
@@ -556,7 +671,7 @@ function topbar() {
     <p class="text-sm font-semibold text-pas-900">${titles[ui.page]}</p>
     <div class="ml-auto flex items-center gap-3">
       <span class="hidden text-xs text-slate-500 sm:block">${fmtLong(todayISO())}</span>
-      ${session ? `<span id="saveState" class="hidden text-xs text-slate-500 md:block">${lastSaved ? 'Tersimpan ' + lastSaved : 'Tersimpan otomatis'}</span>` : ''}${accountChip()}
+      ${session ? `<span id="saveState" class="hidden text-xs text-slate-500 md:block">${lastSaved || 'Tersimpan otomatis'}</span>` : ''}${accountChip()}
     </div>
   </header>`;
 }
@@ -810,13 +925,13 @@ function settingsAdmin() {
       <div class="space-y-4">${f('Nama Sekolah', 'school', st.school)}${f('Nama Yayasan', 'foundation', st.foundation)}${f('Alamat (baris kop)', 'address', st.address, 'text', 'Ubah sesuai alamat resmi sekolah — tampil di kop kuitansi.')}
       ${f('Nama Bendahara SPP (default)', 'officer', st.officer)}${f('SPP Default per Bulan (Rp)', 'defaultSpp', st.defaultSpp, 'number', 'Dipakai sebagai nominal awal saat menambah siswa baru. Nominal tiap siswa tetap bisa diubah.')}${f('Operasional Ujian per Semester (Rp)', 'ujianFee', st.ujianFee, 'number', 'Nominal awal di form pembayaran; tetap bisa diubah per transaksi.')}${f('Sampul Rapor (Rp)', 'raporFee', st.raporFee, 'number')}</div></div>
     <div class="${CARD} p-5"><h2 class="font-semibold text-slate-900">Pengelolaan Data</h2>
-      <p class="mb-4 mt-1 text-xs text-slate-500">Data tersimpan di <b>localStorage</b> browser ini saja. Lakukan backup berkala agar tidak hilang saat cache/browser dibersihkan.</p>
+      <p class="mb-4 mt-1 text-xs text-slate-500">${CLOUD ? 'Data tersimpan di <b>Google Sheet</b> dan tampil sama di semua perangkat. Backup berkala tetap disarankan.' : 'Data tersimpan di <b>localStorage</b> browser ini saja. Lakukan backup berkala agar tidak hilang saat cache/browser dibersihkan.'}</p>
       <div class="space-y-3">
         <button data-action="backup" class="${BTN_P} w-full">${ic('download', 'h-4 w-4')} Backup Data (JSON)</button>
         <button data-action="restore-click" class="${BTN_O} w-full">${ic('upload', 'h-4 w-4')} Restore dari File Backup</button>
         <input id="restoreFile" type="file" accept=".json,application/json" class="hidden">
         <hr class="border-slate-100">
-        <button data-action="reset-demo" class="${BTN_O} w-full">Kembalikan ke Data Contoh (10 siswa)</button>
+        ${CLOUD ? '' : `<button data-action="reset-demo" class="${BTN_O} w-full">Kembalikan ke Data Contoh (10 siswa)</button>`}
         <button data-action="wipe-all" class="${BTN_O} w-full !border-red-200 !text-red-600 hover:!bg-red-50">${ic('trash', 'h-4 w-4')} Hapus Semua Data</button></div>
       <div class="mt-5 rounded-xl bg-gold-50 p-3 text-xs text-gold-600 ring-1 ring-gold-200"><b>Catatan logo:</b> letakkan file <code>logo.png</code> di folder yang sama dengan <code>index.html</code> agar logo Yayasan Pasundan tampil di sidebar dan kop kuitansi.</div></div>
   </div>`;
@@ -829,7 +944,7 @@ function accountsCard() {
     <td class="px-4 py-3"><div class="flex justify-end gap-1"><button data-action="open-password" data-id="${u.id}" class="${BTN_O} !px-3 !py-1.5 text-xs">${u.id === session.id ? 'Ubah sandi' : 'Atur ulang sandi'}</button>
     ${u.id !== session.id && !(u.role === 'admin' && admins < 2) ? `<button data-action="ask-delete-user" data-id="${u.id}" title="Hapus akun" aria-label="Hapus akun ${esc(u.nama)}" class="rounded-lg p-2 text-slate-500 hover:bg-red-50 hover:text-red-600">${ic('trash', 'h-4 w-4')}</button>` : ''}</div></td></tr>`).join('');
   return `<div class="${CARD} mb-6 overflow-hidden"><div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-5">
-    <div><h2 class="font-semibold text-slate-900">Akun Pengguna</h2><p class="mt-1 text-xs text-slate-500">Admin mengelola akun dan pengaturan; petugas mencatat pembayaran dan mengubah data siswa. Tanpa akun, data hanya bisa dilihat. Akun tersimpan di browser ini dan tidak ikut backup data.</p></div>
+    <div><h2 class="font-semibold text-slate-900">Akun Pengguna</h2><p class="mt-1 text-xs text-slate-500">Admin mengelola akun dan pengaturan; petugas mencatat pembayaran dan mengubah data siswa. Tanpa akun, data hanya bisa dilihat. ${CLOUD ? 'Akun tersimpan di lembar Akun pada Google Sheet.' : 'Akun tersimpan di browser ini dan tidak ikut backup data.'}</p></div>
     <button data-action="open-user-form" class="${BTN_G}">${ic('plus', 'h-4 w-4')} Tambah Akun</button></div>
     <div class="scroll-thin overflow-x-auto"><table class="w-full min-w-[520px] text-sm"><tbody class="divide-y divide-slate-100">${rows}</tbody></table></div></div>`;
 }
@@ -986,9 +1101,9 @@ const formErr = e => e ? `<p role="alert" class="mt-3 rounded-lg bg-red-50 px-3 
 
 function modalAuth(md) {
   const setup = md.mode === 'setup', f = md.f;
-  return `${modalHead(setup ? 'Buat Akun Admin Pertama' : 'Masuk', setup ? (ADMIN_SETUP_CODE ? 'Belum ada akun. Butuh kode pendaftaran dari pemilik sistem. Akun ini menjadi admin.' : 'Belum ada akun. Akun ini menjadi admin.') : 'Hanya akun terdaftar yang bisa mengubah data. Tanpa akun, data hanya bisa dilihat.')}
+  return `${modalHead(setup ? 'Buat Akun Admin Pertama' : 'Masuk', setup ? (CLOUD || ADMIN_SETUP_CODE ? 'Belum ada akun. Butuh kode pendaftaran dari pemilik sistem. Akun ini menjadi admin.' : 'Belum ada akun. Akun ini menjadi admin.') : 'Hanya akun terdaftar yang bisa mengubah data. Tanpa akun, data hanya bisa dilihat.')}
   <form data-form="auth" class="overflow-y-auto p-5"><div class="grid gap-4">
-    ${setup ? (ADMIN_SETUP_CODE ? fieldHTML('Kode pendaftaran admin *', 'code', f.code, { af: true }) : '') + fieldHTML('Nama lengkap *', 'nama', f.nama, { ac: 'name', af: !ADMIN_SETUP_CODE }) : ''}
+    ${setup ? (CLOUD || ADMIN_SETUP_CODE ? fieldHTML('Kode pendaftaran admin *', 'code', f.code, { af: true }) : '') + fieldHTML('Nama lengkap *', 'nama', f.nama, { ac: 'name', af: !CLOUD && !ADMIN_SETUP_CODE }) : ''}
     ${fieldHTML('Nama pengguna *', 'username', f.username, { ac: 'username', af: !setup && !md.error })}
     ${fieldHTML('Kata sandi *', 'password', f.password, { type: 'password', ac: setup ? 'new-password' : 'current-password', af: !setup && !!md.error })}
     ${setup ? fieldHTML('Ulangi kata sandi *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' }) : ''}</div>
@@ -1003,7 +1118,7 @@ function modalUser(md) {
     ${fieldHTML('Nama pengguna *', 'username', f.username, { ac: 'off' })}
     <label class="block"><span class="mb-1 block text-xs font-medium text-slate-600">Peran</span><select data-mf="role" class="${INPUT}"><option value="petugas" ${f.role === 'petugas' ? 'selected' : ''}>Petugas</option><option value="admin" ${f.role === 'admin' ? 'selected' : ''}>Admin</option></select></label>
     ${fieldHTML('Kata sandi *', 'password', f.password, { type: 'password', ac: 'new-password' })}
-    ${fieldHTML('Ulangi kata sandi *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' })}</div>${formFoot('Simpan akun')}</form>`;
+    ${fieldHTML('Ulangi kata sandi *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' })}</div>${formErr(md.error)}${formFoot('Simpan akun')}</form>`;
 }
 function modalPassword(md) {
   const f = md.f, u = AUTH.users.find(x => x.id === md.userId), self = session && md.userId === session.id;
@@ -1011,7 +1126,7 @@ function modalPassword(md) {
   <form data-form="password" class="overflow-y-auto p-5"><div class="grid gap-4">
     ${self ? fieldHTML('Kata sandi saat ini *', 'current', f.current, { type: 'password', ac: 'current-password', af: true }) : ''}
     ${fieldHTML('Kata sandi baru *', 'password', f.password, { type: 'password', ac: 'new-password', af: !self })}
-    ${fieldHTML('Ulangi kata sandi baru *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' })}</div>${formFoot('Simpan')}</form>`;
+    ${fieldHTML('Ulangi kata sandi baru *', 'confirm', f.confirm, { type: 'password', ac: 'new-password' })}</div>${formErr(md.error)}${formFoot('Simpan')}</form>`;
 }
 
 function modalConfirm(md) {
@@ -1085,7 +1200,7 @@ function render() {
     ${ui.sidebar ? '<div class="fixed inset-0 z-30 bg-slate-900/50 lg:hidden" data-action="close-sidebar"></div>' : ''}
     <div class="flex min-w-0 flex-1 flex-col">${topbar()}
       <main class="mx-auto w-full max-w-[1400px] flex-1 p-4 sm:p-6 lg:p-8">${pages[ui.page]()}</main>
-      <footer class="px-6 pb-6 text-center text-xs text-slate-400">© ${THIS_YEAR} ${esc(DB.settings.school)} · Sistem Informasi SPP · Data tersimpan di browser ini (localStorage)</footer></div></div>`;
+      <footer class="px-6 pb-6 text-center text-xs text-slate-400">© ${THIS_YEAR} ${esc(DB.settings.school)} · Sistem Informasi SPP · ${CLOUD ? 'Data tersimpan di Google Sheet' : 'Data tersimpan di browser ini (localStorage)'}</footer></div></div>`;
 }
 function renderKeepFocus(t) {
   const key = t.dataset.ui, pos = t.selectionStart, isInput = t.tagName === 'INPUT';
@@ -1174,16 +1289,19 @@ document.addEventListener('click', e => {
     case 'open-fee': openFee(d.id, d.k); break;
     case 'fee-toggle': { const k = d.k; if (modal.sel.has(k)) modal.sel.delete(k); else { modal.sel.add(k); if (!modal.amts[k]) modal.amts[k] = String(feeDefault(k)); } modal.error = ''; renderModal(); break; }
     case 'save-fee': saveFee(); break;
-    case 'logout': setSession(null); modal = null; if (ui.page === 'pengaturan') ui.page = 'dashboard'; render(); renderModal(); toast('Anda sudah keluar. Data kini hanya bisa dilihat.'); break;
+    case 'retry-boot': bootCloud(); break;
+    case 'logout': if (CLOUD) api({ action: 'logout', token: cloud.token }).catch(() => {}); setSession(null); modal = null; if (ui.page === 'pengaturan') ui.page = 'dashboard'; render(); renderModal(); toast('Anda sudah keluar. Data kini hanya bisa dilihat.'); break;
     case 'open-user-form': modal = { type: 'user', f: { nama: '', username: '', role: 'petugas', password: '', confirm: '' }, errors: {} }; renderModal(); break;
     case 'open-password': if (!session || (d.id !== session.id && !guard(true))) break; modal = { type: 'password', userId: d.id, f: { current: '', password: '', confirm: '' }, errors: {} }; renderModal(); break;
     case 'ask-delete-user': {
       const u = AUTH.users.find(x => x.id === d.id);
       if (!u || u.id === session.id || (u.role === 'admin' && AUTH.users.filter(x => x.role === 'admin').length < 2)) break;
-      askConfirm('Hapus akun?', `Akun ${u.nama} (${u.username}) tidak bisa lagi masuk. Data pembayaran tidak terpengaruh.`, () => { AUTH.users = AUTH.users.filter(x => x.id !== u.id); saveAuth(); render(); toast('Akun dihapus.'); }, { danger: true, confirmLabel: 'Ya, hapus' });
+      askConfirm('Hapus akun?', `Akun ${u.nama} (${u.username}) tidak bisa lagi masuk. Data pembayaran tidak terpengaruh.`, () => {
+        if (CLOUD) { api({ action: 'deleteUser', token: cloud.token, id: u.id }).then(r => { if (r.error) toast(r.error, 'err'); else { refreshUsers(); toast('Akun dihapus.'); } }).catch(() => toast('Tidak dapat terhubung ke Google Sheet.', 'err')); return; }
+        AUTH.users = AUTH.users.filter(x => x.id !== u.id); saveAuth(); render(); toast('Akun dihapus.'); }, { danger: true, confirmLabel: 'Ya, hapus' });
       break;
     }
-    case 'nav': if (d.page === 'pengaturan' && !session) break; ui.page = d.page; ui.sidebar = false; if (d.rv) ui.rview = d.rv; window.scrollTo(0, 0); render(); break;
+    case 'nav': if (d.page === 'pengaturan' && !session) break; ui.page = d.page; ui.sidebar = false; if (d.rv) ui.rview = d.rv; window.scrollTo(0, 0); render(); if (d.page === 'pengaturan') refreshUsers(); break;
     case 'toggle-sidebar': ui.sidebar = !ui.sidebar; render(); break;
     case 'close-sidebar': ui.sidebar = false; render(); break;
     case 'goto-matrix': { const s = studentById(d.id); ui.page = 'matriks'; ui.mq = s ? s.nis : ''; ui.mkelas = 'ALL'; window.scrollTo(0, 0); render(); break; }
@@ -1277,11 +1395,14 @@ document.addEventListener('keydown', e => {
 });
 
 // Start
-DB = loadDB() || seed();
-restoreSession();
-persist();
-render();
-renderModal();
+if (CLOUD) bootCloud();
+else {
+  DB = loadDB() || seed();
+  restoreSession();
+  persist();
+  render();
+  renderModal();
+}
 
 })();
 </script>
