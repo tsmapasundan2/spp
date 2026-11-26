@@ -46,6 +46,7 @@
   <div id="toastRoot" class="fixed right-4 top-4 z-[80] space-y-2"></div>
   <div id="printArea" class="hidden"></div>
 
+<script src="config.js"></script>
 <script>
 (function () {
 'use strict';
@@ -69,8 +70,8 @@ const THIS_MONTH = NOW.getMonth() + 1;
 const THIS_SLOT = (THIS_MONTH + 5) % 12 + 1;
 const THIS_TA = THIS_MONTH >= 7 ? THIS_YEAR : THIS_YEAR - 1;
 const STORE_KEY = 'spp_pasundan2_v1';
-// Tempel alamat Web App Google Apps Script (berakhiran /exec). Kosong = mode lokal, data hanya di browser ini.
-const API_URL = 'https://script.google.com/macros/s/AKfycbz0a6V_MN5wpqHwLZKzUml73rg-5bybym7Fd5wFz3mE1NuA_zfDOAWp5EA6zyzLbG5b/exec';
+// Alamat Web App diisi di config.js, bukan di sini, supaya koneksi ke data tidak hilang saat index.html diperbarui. Kosong = mode lokal.
+const API_URL = (window.SPP_CONFIG && window.SPP_CONFIG.apiUrl) || '';
 const CLOUD = !!API_URL;
 const AUTH_KEY = 'spp_pasundan2_auth';
 const SESSION_KEY = 'spp_pasundan2_session';
@@ -613,7 +614,12 @@ function sel(key, opts, val, o = {}) {
   return `<label class="block ${o.cls || ''}">${o.label ? `<span class="mb-1 block text-xs font-medium text-slate-500">${o.label}</span>` : ''}
     <select data-ui="${key}" ${o.num ? 'data-num' : ''} class="${INPUT} pr-8">${opts.map(x => `<option value="${esc(x.v)}" ${String(x.v) === String(val) ? 'selected' : ''}>${esc(x.l)}</option>`).join('')}</select></label>`;
 }
-const yearOpts = () => { const a = []; for (let y = THIS_TA - 2; y <= THIS_TA + 1; y++) a.push({ v: y, l: `${taLabel(y)} (Jul–Jun)` }); return a; };
+const yearOpts = () => {
+  const first = Math.min(THIS_TA - 2, ...DB.payments.map(p => p.year), ...DB.fees.map(f => f.year));
+  const a = [];
+  for (let y = first; y <= THIS_TA + 1; y++) a.push({ v: y, l: `${taLabel(y)} (Jul–Jun)` });
+  return a;
+};
 const levelOpts = [{ v: 'ALL', l: 'Semua Tingkat' }, { v: 'X', l: 'Kelas X' }, { v: 'XI', l: 'Kelas XI' }, { v: 'XII', l: 'Kelas XII' }];
 const yearSel = () => sel('year', yearOpts(), ui.year, { label: 'Tahun Ajaran', num: true, cls: 'w-full sm:w-44' });
 const levelSel = () => sel('level', levelOpts, ui.level, { label: 'Tingkat Kelas', cls: 'w-full sm:w-44' });
@@ -670,7 +676,7 @@ function topbar() {
     <p class="text-sm font-semibold text-pas-900">${titles[ui.page]}</p>
     <div class="ml-auto flex items-center gap-3">
       <span class="hidden text-xs text-slate-500 sm:block">${fmtLong(todayISO())}</span>
-      ${session ? `<span id="saveState" class="hidden text-xs text-slate-500 md:block">${lastSaved || 'Tersimpan otomatis'}</span>` : ''}${accountChip()}
+      ${!CLOUD && /^https?:/.test(location.protocol) && !/^(localhost|127\.)/.test(location.hostname) ? '<span class="rounded bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">Belum tersambung ke Google Sheet (periksa config.js)</span>' : ''}${session ? `<span id="saveState" class="hidden text-xs text-slate-500 md:block">${lastSaved || 'Tersimpan otomatis'}</span>` : ''}${accountChip()}
     </div>
   </header>`;
 }
@@ -933,9 +939,31 @@ function settingsAdmin() {
         ${CLOUD ? '' : `<button data-action="reset-demo" class="${BTN_O} w-full">Kembalikan ke Data Contoh (10 siswa)</button>`}
         <button data-action="wipe-all" class="${BTN_O} w-full !border-red-200 !text-red-600 hover:!bg-red-50">${ic('trash', 'h-4 w-4')} Hapus Semua Data</button></div>
       <div class="mt-5 rounded-xl bg-gold-50 p-3 text-xs text-gold-600 ring-1 ring-gold-200"><b>Catatan logo:</b> letakkan file <code>logo.png</code> di folder yang sama dengan <code>index.html</code> agar logo Yayasan Pasundan tampil di sidebar dan kop kuitansi.</div></div>
+    ${sigCard()}
   </div>`;
 }
 
+let sigStrokes = [], sigTouched = false, sigDrawing = false;
+function sigPath(strokes) {
+  return strokes.map(s => {
+    let d = `M${s[0]} ${s[1]}`;
+    if (s.length < 4) return d + 'l.1 .1';
+    for (let i = 2; i < s.length; i += 2) d += `L${s[i]} ${s[i + 1]}`;
+    return d;
+  }).join('');
+}
+const sigSVG = (strokes, cls) => `<svg viewBox="0 0 480 180" class="${cls}" fill="none" stroke="#0f172a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="${sigPath(strokes)}"/></svg>`;
+function sigMarkup() {
+  const sg = DB.settings.signature;
+  return `<div class="h-14">${sg && sg.paths && sg.paths.length ? sigSVG(sg.paths, 'mx-auto block h-full w-auto') : ''}</div>`;
+}
+function sigCard() {
+  if (!sigTouched) sigStrokes = ((DB.settings.signature || {}).paths || []).map(s => s.slice());
+  return `<div class="${CARD} p-5 lg:col-span-2"><h2 class="font-semibold text-slate-900">Tanda Tangan Bendahara</h2>
+    <p class="mb-4 mt-1 text-xs text-slate-500">Gambar tanda tangan dengan jari atau mouse, lalu simpan. Tanda tangan tampil di semua kuitansi, termasuk yang lama.</p>
+    <svg id="sigPad" viewBox="0 0 480 180" class="aspect-[8/3] w-full max-w-xl cursor-crosshair touch-none rounded-lg border border-dashed border-slate-300 bg-white" fill="none" stroke="#0f172a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Area menggambar tanda tangan"><path id="sigLive" d="${sigPath(sigStrokes)}"/></svg>
+    <div class="mt-3 flex flex-wrap gap-2"><button data-action="sig-save" class="${BTN_P}">Simpan Tanda Tangan</button><button data-action="sig-clear" class="${BTN_O}">Bersihkan Area</button>${DB.settings.signature ? `<button data-action="sig-remove" class="${BTN_O} !text-red-600">Hapus yang Tersimpan</button>` : ''}</div></div>`;
+}
 function accountsCard() {
   const admins = AUTH.users.filter(u => u.role === 'admin').length;
   const rows = AUTH.users.map(u => `<tr><td class="px-4 py-3"><p class="font-semibold text-slate-900">${esc(u.nama)}</p><p class="text-xs text-slate-500">${esc(u.username)}</p></td>
@@ -984,7 +1012,7 @@ function receiptHTML(r) {
      <table class="mt-1 w-full text-[13px]"><tbody>${row('Metode Pembayaran', esc(r.method))}${row('Tanggal Bayar', fmtLong(r.date))}${r.note ? row('Catatan', esc(r.note)) : ''}</tbody></table>
      <div class="mt-4 grid grid-cols-2 gap-6 text-center text-[12px]">
        <div><p>&nbsp;</p><p>Penyetor / Wali Murid</p><div class="h-14"></div><p class="mx-auto w-40 border-t border-slate-500 pt-0.5">(.................................)</p></div>
-       <div><p>Tasikmalaya, ${fmtLong(r.date)}</p><p>Bendahara SPP</p><div class="h-14"></div><p class="mx-auto w-48 border-t border-slate-500 pt-0.5 font-bold">${esc(r.officer)}</p></div></div>
+       <div><p>Tasikmalaya, ${fmtLong(r.date)}</p><p>Bendahara SPP</p>${sigMarkup()}<p class="mx-auto w-48 border-t border-slate-500 pt-0.5 font-bold">${esc(r.officer)}</p></div></div>
      <p class="mt-3 border-t border-slate-200 pt-2 text-center text-[10px] text-slate-500">Simpan kuitansi ini sebagai bukti pembayaran SPP yang sah.</p>
     </div></div></div>`;
 }
@@ -1270,7 +1298,28 @@ function saveStudent() {
 }
 
 const EDIT_ACTIONS = new Set(['open-student-form', 'save-student', 'ask-delete-student', 'open-pay', 'pay-toggle', 'pay-all-due', 'pay-all', 'pay-clear', 'pay-method', 'save-payment', 'ask-void', 'open-fee', 'fee-toggle', 'save-fee']);
-const ADMIN_ACTIONS = new Set(['backup', 'restore-click', 'reset-demo', 'wipe-all', 'open-user-form']);
+const ADMIN_ACTIONS = new Set(['backup', 'restore-click', 'reset-demo', 'wipe-all', 'open-user-form', 'sig-save', 'sig-clear', 'sig-remove']);
+
+const sigPt = (pad, e) => {
+  const r = pad.getBoundingClientRect();
+  return [Math.round((e.clientX - r.left) * 480 / (r.width || 480)), Math.round((e.clientY - r.top) * 180 / (r.height || 180))];
+};
+const sigLive = () => { const el = $('sigLive'); if (el) el.setAttribute('d', sigPath(sigStrokes)); };
+document.addEventListener('pointerdown', e => {
+  const pad = e.target.closest && e.target.closest('#sigPad');
+  if (!pad || !isAdmin()) return;
+  e.preventDefault();
+  if (pad.setPointerCapture && e.pointerId !== undefined) pad.setPointerCapture(e.pointerId);
+  sigTouched = true; sigDrawing = true; sigStrokes.push(sigPt(pad, e)); sigLive();
+});
+document.addEventListener('pointermove', e => {
+  const pad = $('sigPad');
+  if (!sigDrawing || !pad || sigStrokes.reduce((n, s) => n + s.length, 0) > 5000) return;
+  const s = sigStrokes[sigStrokes.length - 1], p = sigPt(pad, e);
+  if (Math.abs(p[0] - s[s.length - 2]) + Math.abs(p[1] - s[s.length - 1]) < 2) return;
+  s.push(p[0], p[1]); sigLive();
+});
+['pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, () => { sigDrawing = false; }));
 
 document.addEventListener('submit', e => {
   const form = e.target.closest('[data-form]'); if (!form) return;
@@ -1289,6 +1338,9 @@ document.addEventListener('click', e => {
     case 'fee-toggle': { const k = d.k; if (modal.sel.has(k)) modal.sel.delete(k); else { modal.sel.add(k); if (!modal.amts[k]) modal.amts[k] = String(feeDefault(k)); } modal.error = ''; renderModal(); break; }
     case 'save-fee': saveFee(); break;
     case 'retry-boot': bootCloud(); break;
+    case 'sig-clear': sigStrokes = []; sigTouched = true; render(); break;
+    case 'sig-save': DB.settings.signature = sigStrokes.length ? { paths: sigStrokes.map(s => s.slice()) } : null; sigTouched = false; persist(); render(); toast('Tanda tangan disimpan.'); break;
+    case 'sig-remove': DB.settings.signature = null; sigTouched = false; persist(); render(); toast('Tanda tangan dihapus.'); break;
     case 'logout': if (CLOUD) api({ action: 'logout', token: cloud.token }).catch(() => {}); setSession(null); modal = null; if (ui.page === 'pengaturan') ui.page = 'dashboard'; render(); renderModal(); toast('Anda sudah keluar. Data kini hanya bisa dilihat.'); break;
     case 'open-user-form': modal = { type: 'user', f: { nama: '', username: '', role: 'petugas', password: '', confirm: '' }, errors: {} }; renderModal(); break;
     case 'open-password': if (!session || (d.id !== session.id && !guard(true))) break; modal = { type: 'password', userId: d.id, f: { current: '', password: '', confirm: '' }, errors: {} }; renderModal(); break;
@@ -1300,7 +1352,7 @@ document.addEventListener('click', e => {
         AUTH.users = AUTH.users.filter(x => x.id !== u.id); saveAuth(); render(); toast('Akun dihapus.'); }, { danger: true, confirmLabel: 'Ya, hapus' });
       break;
     }
-    case 'nav': if (d.page === 'pengaturan' && !session) break; ui.page = d.page; ui.sidebar = false; if (d.rv) ui.rview = d.rv; window.scrollTo(0, 0); render(); if (d.page === 'pengaturan') refreshUsers(); break;
+    case 'nav': if (d.page === 'pengaturan' && !session) break; ui.page = d.page; ui.sidebar = false; if (d.rv) ui.rview = d.rv; window.scrollTo(0, 0); render(); if (d.page === 'pengaturan') { sigTouched = false; refreshUsers(); } break;
     case 'toggle-sidebar': ui.sidebar = !ui.sidebar; render(); break;
     case 'close-sidebar': ui.sidebar = false; render(); break;
     case 'goto-matrix': { const s = studentById(d.id); ui.page = 'matriks'; ui.mq = s ? s.nis : ''; ui.mkelas = 'ALL'; window.scrollTo(0, 0); render(); break; }
