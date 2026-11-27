@@ -996,7 +996,7 @@ const sigSVG = (strokes, cls) => `<svg viewBox="0 0 480 180" class="${cls}" fill
 function sigMarkup() {
   const sg = DB.settings.signature;
   const sig = sg && sg.paths && sg.paths.length ? sigSVG(sg.paths, 'relative mx-auto block h-full w-auto') : '';
-  return `<div class="relative mx-auto h-14 w-48"><img src="${CAP_SRC}" alt="Cap sekolah" class="absolute -left-8 top-1/2 h-16 w-16 -translate-y-1/2 object-contain">${sig}</div>`;
+  return `<div class="relative mx-auto my-2 h-14 w-48"><img src="${CAP_SRC}" alt="Cap sekolah" class="absolute -left-3 top-1/2 h-[4.5rem] w-[4.5rem] -translate-y-1/2 object-contain">${sig}</div>`;
 }
 function sigCard() {
   if (!sigTouched) sigStrokes = ((DB.settings.signature || {}).paths || []).map(s => s.slice());
@@ -1052,7 +1052,7 @@ function receiptHTML(r) {
      <p class="mt-1.5 text-[12px] italic text-slate-700">Terbilang: <b>${esc(terbilang(r.total))}</b></p>
      <table class="mt-1 w-full text-[13px]"><tbody>${row('Metode Pembayaran', esc(r.method))}${row('Tanggal Bayar', fmtLong(r.date))}${r.note ? row('Catatan', esc(r.note)) : ''}</tbody></table>
      <div class="mt-4 grid grid-cols-2 gap-6 text-center text-[12px]">
-       <div><p>&nbsp;</p><p>Penyetor / Wali Murid</p><div class="h-14"></div><p class="mx-auto w-40 border-t border-slate-500 pt-0.5">(.................................)</p></div>
+       <div><p>&nbsp;</p><p>Penyetor / Wali Murid</p><div class="my-2 h-14"></div><p class="mx-auto w-40 border-t border-slate-500 pt-0.5">(.................................)</p></div>
        <div><p>Tasikmalaya, ${fmtLong(r.date)}</p><p>Bendahara SPP</p>${sigMarkup()}<p class="mx-auto w-48 border-t border-slate-500 pt-0.5 font-bold">${esc(r.officer)}</p></div></div>
      <p class="mt-3 border-t border-slate-200 pt-2 text-center text-[10px] text-slate-500">Simpan kuitansi ini sebagai bukti pembayaran SPP yang sah.</p>
     </div></div></div>`;
