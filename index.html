@@ -1058,10 +1058,21 @@ function receiptHTML(r) {
     </div></div></div>`;
 }
 
+// Browser memakai judul halaman sebagai nama file saat kuitansi disimpan sebagai PDF.
+function receiptFileName(r) {
+  const parts = [];
+  if (r.ps.length) parts.push(`SPP ${monthsText(r.ps.map(p => p.month))}`);
+  if (r.fs.length) parts.push(r.fs.map(f => FEES[f.kind]).join(' dan '));
+  return `Kwitansi ${r.s.nama} - Pembayaran ${parts.join(' dan ')} TA ${taLabel(r.year)} - ${r.rc}`.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim();
+}
 function printReceipt(rc) {
   const r = receiptOf(rc); if (!r) return;
   $('printArea').innerHTML = receiptHTML(r);
-  setTimeout(() => { try { window.print(); } catch (e) { toast('Dialog cetak tidak bisa dibuka. Gunakan Ctrl+P.', 'err'); } }, 250);
+  const oldTitle = document.title;
+  const restore = () => { document.title = oldTitle; window.removeEventListener('afterprint', restore); };
+  document.title = receiptFileName(r);
+  window.addEventListener('afterprint', restore);
+  setTimeout(() => { try { window.print(); } catch (e) { restore(); toast('Dialog cetak tidak bisa dibuka. Gunakan Ctrl+P.', 'err'); } }, 250);
 }
 
 // Modal
